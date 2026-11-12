@@ -5,7 +5,9 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "demo": "node demo.js"
+    "demo": "node demo.js",
+    "mcp": "node mcp-server.js",
+    "mcp:test": "node mcp-smoke-test.js"
   },
   "keywords": [],
   "author": "",
@@ -13,6 +15,11 @@
   "type": "module",
   "private": "true",
   "dependencies": {
-    "near-api-js": "^7.5.3"
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "near-api-js": "^7.5.3",
+    "zod": "^4.6.7"
+  },
+  "bin": {
+    "agent-leash-mcp": "mcp-server.js"
   }
 }
