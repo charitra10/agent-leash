@@ -346,8 +346,8 @@ function acct(id) {
 }
 function ago(ms) {
   const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
-  if (s < 5) return "just now";
-  if (s < 60) return `${s}s ago`;
+  if (s < 10) return "just now";
+  if (s < 60) return "<1m ago";
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
   return `${Math.floor(s / 86400)}d ago`;
@@ -410,7 +410,7 @@ let first = true, prev = null;
 function renderStatus(s) {
   const frozen = s.frozen;
   document.body.classList.toggle("frozen", frozen);
-  $("state").innerHTML = frozen ? `${STATE_ICON.frozen} FROZEN · ALL PAYMENTS BLOCKED` : `${STATE_ICON.active} LEASH ACTIVE`;
+  setHTML($("state"), frozen ? `${STATE_ICON.frozen} FROZEN · ALL PAYMENTS BLOCKED` : `${STATE_ICON.active} LEASH ACTIVE`);
   $("agentName").textContent = s.agent_id;
   $("spent").textContent = near(s.spent_in_window);
   $("limit").textContent = near(s.policy.window_limit);
@@ -429,12 +429,12 @@ function renderStatus(s) {
   $("pendCount").textContent = s.pending_count;
 
   const p = s.policy;
-  $("rules").innerHTML = [
+  setHTML($("rules"), [
     ["Max per payment", `${near(p.max_per_tx)} NEAR`],
     ["Owner approval above", `${near(p.auto_approve_limit)} NEAR`],
     ["Spending limit", `${near(p.window_limit)} NEAR ${dur(p.window_sec)}`],
     ["Recipients", p.allowlist_only ? "allowlist only" : "anyone not blocklisted"],
-  ].map(([k, v]) => `<div class="rule"><span class="rk">${k}</span><span class="rv">${esc(v)}</span></div>`).join("");
+  ].map(([k, v]) => `<div class="rule"><span class="rk">${k}</span><span class="rv">${esc(v)}</span></div>`).join(""));
 
   if (prev && !first) {
     if (s.total_blocked > prev.total_blocked) flash("statBlocked");
@@ -444,9 +444,24 @@ function renderStatus(s) {
   prev = s;
 }
 
+// Only write to the DOM when the content actually changed (avoids flicker).
+function setHTML(el, html) {
+  if (el._html !== html) { el.innerHTML = html; el._html = html; }
+}
+function setText(el, text) {
+  if (el.textContent !== text) el.textContent = text;
+}
+// Play the entry animation once, then drop the class so a DOM move can't replay it.
+function animateOnce(li, delay = 0) {
+  li.classList.add("enter");
+  if (delay) li.style.animationDelay = `${delay}ms`;
+  setTimeout(() => { li.classList.remove("enter"); li.style.animationDelay = ""; }, 2000 + delay);
+}
+
 function renderFeed(history) {
   const list = $("feed");
-  if (!history.length) { list.innerHTML = '<li class="empty">No activity yet. Run <code>npm run demo</code> in agent/.</li>'; return; }
+  if (!history.length) { setHTML(list, '<li class="empty">No activity yet. Run <code>npm run demo</code> in agent/.</li>'); return; }
+  list._html = null;
   const els = [];
   let newBlocked = null;
   history.forEach((a, i) => {
@@ -465,32 +480,35 @@ function renderFeed(history) {
         </div>
         <div class="it-side"><span class="pill">${esc(pill)}</span><span class="ago" data-ts="${a.timestamp_ms}"></span></div>`;
       if (!first) {
-        li.classList.add("enter");
+        animateOnce(li);
         if (a.outcome === "Blocked" && !newBlocked) newBlocked = a;
       } else if (i < 8) {
-        li.classList.add("enter");
-        li.style.animationDelay = `${i * 60}ms`;
+        animateOnce(li, i * 60);
       }
       nodes.set(key, li);
     }
-    li.querySelector(".ago").textContent = ago(a.timestamp_ms);
+    setText(li.querySelector(".ago"), ago(a.timestamp_ms));
     els.push(li);
   });
-  list.replaceChildren(...els);
-  $("feedCount").textContent = `${history.length} recent`;
+  // Reconcile in place: remove stale rows, insert new ones; never re-insert a row already in position.
+  const keep = new Set(els);
+  for (const child of [...list.children]) if (!keep.has(child)) child.remove();
+  els.forEach((li, i) => { if (list.children[i] !== li) list.insertBefore(li, list.children[i] || null); });
+  for (const [k, li] of nodes) if (!keep.has(li)) nodes.delete(k);
+  setText($("feedCount"), `${history.length} recent`);
   if (newBlocked && newBlocked.reason !== "frozen") {
     toast(`Blocked: ${esc(REASONS[newBlocked.reason] || newBlocked.reason)}<small>${near(newBlocked.amount)} NEAR → ${esc(newBlocked.receiver_id)}</small>`);
   }
 }
 
 function renderPending(pending) {
-  $("pending").innerHTML = pending.length
+  setHTML($("pending"), pending.length
     ? pending.map((p) => `<div class="pend"><div class="pa">${near(p.amount)} NEAR → ${esc(p.receiver_id.split(".")[0])}</div><div class="pm">“${esc(p.memo || "no memo")}” · ${ago(p.timestamp_ms)} · id ${p.id}</div></div>`).join("")
-    : '<span class="muted">Nothing pending</span>';
+    : '<span class="muted">Nothing pending</span>');
 }
 
 function renderAllow(list) {
-  $("allow").innerHTML = list.map((a) => `<span class="tag ok" title="${esc(a)}">${esc(a)}</span>`).join("") || '<span class="muted">Allowlist is empty</span>';
+  setHTML($("allow"), list.map((a) => `<span class="tag ok" title="${esc(a)}">${esc(a)}</span>`).join("") || '<span class="muted">Allowlist is empty</span>');
 }
 
 async function renderKeys(agentId) {
@@ -510,9 +528,9 @@ async function renderKeys(agentId) {
       rows.push(["w", "!", "No function-call key for the leash found"]);
     }
     if (full.length) rows.push(["w", "!", `Account also has ${full.length} full-access key${full.length > 1 ? "s" : ""} (held by the owner, not the agent)`]);
-    $("perms").innerHTML = rows.map(([c, b, t]) => `<div class="perm ${c}"><span class="b">${b}</span><span class="t">${t}</span></div>`).join("");
+    setHTML($("perms"), rows.map(([c, b, t]) => `<div class="perm ${c}"><span class="b">${b}</span><span class="t">${t}</span></div>`).join(""));
   } catch (e) {
-    $("perms").innerHTML = `<span class="muted">Couldn't read keys: ${esc(e.message)}</span>`;
+    setHTML($("perms"), `<span class="muted">Couldn't read keys: ${esc(e.message)}</span>`);
   }
 }
 
