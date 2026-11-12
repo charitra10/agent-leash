@@ -11,7 +11,8 @@ Built for **NEAR HACKATHON 2026** (tracks: AI Security & Defense · Agent Econom
 ## Status
 - ✅ Contract (`contract/`, Rust, near-sdk 5) with 16 passing unit tests: `cd contract && cargo test`
 - ✅ Live on testnet: [`leash.leash-demo-d09e.testnet`](https://testnet.nearblocks.io/address/leash.leash-demo-d09e.testnet)
-- ⏳ Demo agent (`agent/`), dashboard (`dashboard/`)
+- ✅ Live dashboard: **https://charitra10.github.io/agent-leash/** (reads the testnet contract directly)
+- ✅ Scripted attack demo: `cd agent && npm install && npm run demo`
 
 ## Hackathon disclosure
 All code in this repository was written from scratch during the hackathon window, starting 2026-11-12. Libraries used: `near-sdk` (Rust) and `near-api-js` (JavaScript).

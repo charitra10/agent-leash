@@ -1,0 +1,545 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Leash Console</title>
+<meta name="description" content="Live dashboard for an Agent Leash contract on NEAR: on-chain spending rules for AI agents.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2 4 7v8c0 7.5 5.1 13.4 12 15 6.9-1.6 12-7.5 12-15V7L16 2z' fill='%2334d399'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #07090f;
+  --bg-2: #0b0f19;
+  --panel: rgba(17, 22, 35, 0.72);
+  --panel-solid: #111623;
+  --panel-hi: rgba(255, 255, 255, 0.035);
+  --border: rgba(255, 255, 255, 0.07);
+  --border-hi: rgba(255, 255, 255, 0.14);
+  --text: #e8ebf3;
+  --muted: #8b93a7;
+  --faint: #5a6378;
+  --green: #34d399;
+  --green-dim: rgba(52, 211, 153, 0.12);
+  --red: #fb7185;
+  --red-dim: rgba(251, 113, 133, 0.12);
+  --amber: #fbbf24;
+  --amber-dim: rgba(251, 191, 36, 0.12);
+  --ice: #7dd3fc;
+  --ice-dim: rgba(125, 211, 252, 0.12);
+  --violet: #a78bfa;
+  --radius: 18px;
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --state: var(--green);
+  --state-dim: var(--green-dim);
+}
+body.frozen { --state: var(--ice); --state-dim: var(--ice-dim); }
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  min-height: 100vh;
+  background:
+    radial-gradient(1200px 600px at 10% -10%, rgba(52, 211, 153, 0.08), transparent 60%),
+    radial-gradient(900px 500px at 100% 0%, rgba(167, 139, 250, 0.08), transparent 60%),
+    linear-gradient(var(--bg), var(--bg-2));
+  background-attachment: fixed;
+  color: var(--text);
+  font: 14px/1.5 var(--sans);
+  -webkit-font-smoothing: antialiased;
+  transition: background 0.8s;
+}
+body::before { /* faint grid */
+  content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(ellipse at 50% 0%, black 30%, transparent 75%);
+}
+body.frozen::after { /* frost vignette */
+  content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 50;
+  box-shadow: inset 0 0 160px rgba(125, 211, 252, 0.28), inset 0 0 40px rgba(125, 211, 252, 0.18);
+  animation: frost 3s ease-in-out infinite alternate;
+}
+@keyframes frost { from { opacity: 0.65 } to { opacity: 1 } }
+
+.wrap { position: relative; z-index: 1; max-width: 1240px; margin: 0 auto; padding: 28px 24px 48px; }
+
+/* ---------- header ---------- */
+header { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 26px; }
+.brand { display: flex; align-items: center; gap: 12px; }
+.logo {
+  width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center;
+  background: linear-gradient(145deg, var(--state-dim), rgba(255,255,255,0.02));
+  border: 1px solid var(--border-hi); box-shadow: 0 0 24px var(--state-dim);
+  transition: all 0.6s;
+}
+.logo svg { width: 22px; height: 22px; color: var(--state); transition: color 0.6s; }
+.brand h1 { margin: 0; font-size: 18px; font-weight: 800; letter-spacing: -0.02em; }
+.brand p { margin: 0; color: var(--muted); font-size: 12.5px; }
+.spacer { flex: 1; }
+.chip {
+  display: inline-flex; align-items: center; gap: 8px; padding: 7px 12px; border-radius: 999px;
+  background: var(--panel); border: 1px solid var(--border); color: var(--muted);
+  font: 500 12px/1 var(--mono); text-decoration: none; backdrop-filter: blur(10px);
+  white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+}
+a.chip:hover { border-color: var(--border-hi); color: var(--text); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
+.live .dot { background: var(--green); box-shadow: 0 0 0 0 rgba(52,211,153,0.6); animation: ping 1.6s infinite; }
+.stale .dot { background: var(--amber); }
+@keyframes ping { 0% { box-shadow: 0 0 0 0 rgba(52,211,153,0.55) } 100% { box-shadow: 0 0 0 9px rgba(52,211,153,0) } }
+
+/* ---------- layout ---------- */
+.grid { display: grid; gap: 18px; grid-template-columns: repeat(12, 1fr); }
+.card {
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  box-shadow: 0 1px 0 rgba(255,255,255,0.04) inset, 0 20px 40px -24px rgba(0,0,0,0.6);
+  position: relative; overflow: hidden;
+}
+.card-h { display: flex; align-items: center; gap: 10px; padding: 16px 20px 0; }
+.card-h h2 { margin: 0; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.09em; }
+.card-h .count { margin-left: auto; font: 500 12px var(--mono); color: var(--faint); }
+.card-b { padding: 16px 20px 20px; }
+
+/* ---------- hero ---------- */
+.hero { grid-column: span 7; display: flex; gap: 28px; align-items: center; padding: 26px 28px; min-height: 236px; }
+.hero::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(600px 240px at 0% 0%, var(--state-dim), transparent 70%);
+  transition: background 0.8s;
+}
+.ring { position: relative; width: 176px; height: 176px; flex: none; }
+.ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+.ring .track { stroke: rgba(255,255,255,0.06); }
+.ring::before { content: ""; position: absolute; inset: 14px; border-radius: 50%; box-shadow: 0 0 46px 2px var(--ring-glow, var(--green-dim)); transition: box-shadow 0.6s; }
+.ring .bar { stroke: var(--green); transition: stroke-dashoffset 0.9s cubic-bezier(.2,.8,.2,1), stroke 0.6s; }
+.ring .inner { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; }
+.ring .pct { font: 700 34px/1 var(--sans); letter-spacing: -0.03em; }
+.ring .lbl { margin-top: 6px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; }
+.hero-txt { position: relative; min-width: 0; }
+.state {
+  display: inline-flex; align-items: center; gap: 10px; padding: 8px 14px 8px 10px; border-radius: 999px;
+  background: var(--state-dim); color: var(--state); border: 1px solid color-mix(in srgb, var(--state) 35%, transparent);
+  font: 700 12px/1 var(--mono); letter-spacing: 0.12em; transition: all 0.6s;
+}
+.state svg { width: 16px; height: 16px; }
+.hero h3 { margin: 16px 0 6px; font-size: 30px; line-height: 1.12; font-weight: 800; letter-spacing: -0.03em; }
+.hero h3 .of { color: var(--muted); font-weight: 600; }
+.hero .sub { color: var(--muted); font-size: 13.5px; }
+.hero .sub b { color: var(--text); font-weight: 600; }
+
+/* ---------- stats ---------- */
+.stats { grid-column: span 5; display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.stat { padding: 18px 20px; display: flex; flex-direction: column; justify-content: space-between; min-height: 109px; transition: box-shadow 0.4s, border-color 0.4s; }
+.stat .k { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); font-weight: 500; }
+.stat .k i { width: 22px; height: 22px; border-radius: 7px; display: grid; place-items: center; font-style: normal; font-size: 12px; }
+.stat .v { font: 700 28px/1.1 var(--sans); letter-spacing: -0.03em; margin-top: 10px; }
+.stat .v small { font-size: 14px; color: var(--muted); font-weight: 600; margin-left: 4px; }
+.stat.blocked .v { color: var(--red); }
+.stat.flash { border-color: rgba(251,113,133,0.6); box-shadow: 0 0 0 1px rgba(251,113,133,0.4), 0 0 40px rgba(251,113,133,0.25); }
+.stat.flash-g { border-color: rgba(52,211,153,0.5); box-shadow: 0 0 40px rgba(52,211,153,0.18); }
+
+/* ---------- feed ---------- */
+.feed { grid-column: span 8; min-height: 420px; }
+.list { list-style: none; margin: 0; padding: 6px 10px 12px; }
+.item {
+  display: grid; grid-template-columns: 38px 1fr auto; gap: 14px; align-items: center;
+  padding: 12px 12px; border-radius: 14px; border: 1px solid transparent;
+}
+.item + .item { margin-top: 2px; }
+.item:hover { background: var(--panel-hi); }
+.item.enter { animation: enter 0.7s cubic-bezier(.2,.8,.2,1) both; }
+.item.enter.Blocked { animation: enter 0.7s cubic-bezier(.2,.8,.2,1) both, alarm 1.8s ease-out; }
+@keyframes enter { from { opacity: 0; transform: translateY(-10px) scale(0.98); } to { opacity: 1; transform: none; } }
+@keyframes alarm { 0% { background: rgba(251,113,133,0.22); border-color: rgba(251,113,133,0.5); } 100% { background: transparent; border-color: transparent; } }
+.ico { width: 38px; height: 38px; border-radius: 12px; display: grid; place-items: center; }
+.ico svg { width: 18px; height: 18px; }
+.Sent .ico, .Approved .ico { background: var(--green-dim); color: var(--green); }
+.Blocked .ico, .Rejected .ico { background: var(--red-dim); color: var(--red); }
+.Pending .ico { background: var(--amber-dim); color: var(--amber); }
+.it-main { min-width: 0; }
+.it-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.it-title .amt { font-family: var(--mono); font-weight: 600; }
+.it-title .arrow { color: var(--faint); margin: 0 6px; }
+.acct b { font-weight: 600; }
+.acct span { color: var(--faint); font-weight: 400; }
+.it-memo { color: var(--muted); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+.it-side { text-align: right; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.pill { display: inline-block; padding: 4px 9px; border-radius: 999px; font: 600 11px/1.2 var(--mono); letter-spacing: 0.03em; white-space: nowrap; }
+.Sent .pill, .Approved .pill { background: var(--green-dim); color: var(--green); }
+.Blocked .pill, .Rejected .pill { background: var(--red-dim); color: var(--red); }
+.Pending .pill { background: var(--amber-dim); color: var(--amber); }
+.ago { color: var(--faint); font: 500 11px var(--mono); }
+.empty { padding: 50px 20px; text-align: center; color: var(--faint); }
+
+/* ---------- side column ---------- */
+.side { grid-column: span 4; display: flex; flex-direction: column; gap: 18px; }
+.rules { display: grid; gap: 2px; }
+.rule { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px dashed var(--border); }
+.rule:last-child { border-bottom: 0; }
+.rule .rk { color: var(--muted); }
+.rule .rv { font: 600 13px var(--mono); text-align: right; }
+.tags { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.tag { padding: 5px 10px; border-radius: 9px; background: var(--panel-hi); border: 1px solid var(--border); font: 500 12px var(--mono); color: var(--text); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tag.ok::before { content: "✓ "; color: var(--green); }
+.tag.no::before { content: "✕ "; color: var(--red); }
+.perm { display: flex; align-items: center; gap: 10px; padding: 8px 0; }
+.perm .b { width: 22px; height: 22px; border-radius: 7px; display: grid; place-items: center; font-size: 12px; font-weight: 700; flex: none; }
+.perm.y .b { background: var(--green-dim); color: var(--green); }
+.perm.n .b { background: var(--red-dim); color: var(--red); }
+.perm.w .b { background: var(--amber-dim); color: var(--amber); }
+.perm .t { font-size: 13px; }
+.perm .t code { font: 500 12px var(--mono); color: var(--violet); }
+.pend { padding: 12px 14px; border-radius: 12px; background: var(--amber-dim); border: 1px solid rgba(251,191,36,0.25); margin-top: 10px; }
+.pend:first-child { margin-top: 0; }
+.pend .pa { font: 700 14px var(--mono); color: var(--amber); }
+.pend .pm { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+.muted { color: var(--faint); }
+
+/* ---------- toast ---------- */
+.toast {
+  position: fixed; left: 50%; top: 22px; z-index: 60; transform: translate(-50%, -140%);
+  display: flex; align-items: center; gap: 12px; padding: 12px 18px 12px 14px; border-radius: 14px;
+  background: rgba(40, 12, 20, 0.92); border: 1px solid rgba(251,113,133,0.55); color: #ffe4e8;
+  box-shadow: 0 20px 50px -10px rgba(251,113,133,0.45); backdrop-filter: blur(12px);
+  font-weight: 600; max-width: calc(100vw - 32px);
+  opacity: 0; visibility: hidden;
+  transition: transform 0.5s cubic-bezier(.2,.8,.2,1), opacity 0.4s, visibility 0s linear 0.5s;
+}
+.toast.show { transform: translate(-50%, 0); opacity: 1; visibility: visible; transition: transform 0.5s cubic-bezier(.2,.8,.2,1), opacity 0.2s, visibility 0s; }
+.toast.ice { background: rgba(8, 28, 42, 0.92); border-color: rgba(125,211,252,0.6); color: #e0f4ff; box-shadow: 0 20px 50px -10px rgba(125,211,252,0.45); }
+.toast .ti { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; background: rgba(251,113,133,0.2); flex: none; }
+.toast.ice .ti { background: rgba(125,211,252,0.2); }
+.toast small { display: block; font-weight: 500; opacity: 0.75; font-size: 12px; }
+
+footer { margin-top: 28px; color: var(--faint); font-size: 12.5px; display: flex; flex-wrap: wrap; gap: 8px 18px; }
+footer a { color: var(--muted); }
+
+/* ---------- responsive ---------- */
+@media (max-width: 1020px) {
+  .hero, .stats, .feed, .side { grid-column: span 12; }
+}
+@media (max-width: 600px) {
+  .wrap { padding: 18px 16px 36px; }
+  .hero { flex-direction: column; align-items: flex-start; padding: 22px; gap: 20px; }
+  .ring { width: 140px; height: 140px; }
+  .hero h3 { font-size: 24px; }
+  .stats { gap: 12px; }
+  .stat .v { font-size: 22px; }
+  .item { grid-template-columns: 34px 1fr; }
+  .it-side { grid-column: 2; flex-direction: row; align-items: center; justify-content: flex-start; }
+  .chip.contract { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <div class="logo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5l-8-3z"/><path d="m9 12 2 2 4-4"/></svg></div>
+      <div><h1>Agent Leash</h1><p>On-chain spending rules for AI agents</p></div>
+    </div>
+    <div class="spacer"></div>
+    <a class="chip contract" id="contractChip" target="_blank" rel="noopener"></a>
+    <span class="chip" id="netChip"></span>
+    <span class="chip stale" id="liveChip"><span class="dot"></span><span id="liveTxt">connecting</span></span>
+  </header>
+
+  <main class="grid">
+    <section class="card hero">
+      <div class="ring">
+        <svg viewBox="0 0 120 120"><circle class="track" cx="60" cy="60" r="52" fill="none" stroke-width="10"/><circle class="bar" id="ringBar" cx="60" cy="60" r="52" fill="none" stroke-width="10" stroke-linecap="round" stroke-dasharray="326.7" stroke-dashoffset="326.7"/></svg>
+        <div class="inner"><div class="pct" id="pct">0%</div><div class="lbl">of daily limit</div></div>
+      </div>
+      <div class="hero-txt">
+        <span class="state" id="state"></span>
+        <h3><span id="spent">–</span> <span class="of">/ <span id="limit">–</span> NEAR</span></h3>
+        <div class="sub">spent by <b id="agentName">the agent</b> this window · <span id="resets">–</span></div>
+      </div>
+    </section>
+
+    <section class="stats">
+      <div class="card stat" id="statBal"><div class="k"><i style="background:var(--violet);background:rgba(167,139,250,.14);color:var(--violet)">◈</i>Available balance</div><div class="v"><span id="bal">–</span><small>NEAR</small></div></div>
+      <div class="card stat" id="statSent"><div class="k"><i style="background:var(--green-dim);color:var(--green)">↗</i>Payments sent</div><div class="v" id="sent">–</div></div>
+      <div class="card stat blocked" id="statBlocked"><div class="k"><i style="background:var(--red-dim);color:var(--red)">⛔</i>Threats blocked</div><div class="v" id="blocked">–</div></div>
+      <div class="card stat" id="statPend"><div class="k"><i style="background:var(--amber-dim);color:var(--amber)">⏳</i>Awaiting approval</div><div class="v" id="pendCount">–</div></div>
+    </section>
+
+    <section class="card feed">
+      <div class="card-h"><h2>Live activity</h2><span class="count" id="feedCount"></span></div>
+      <ul class="list" id="feed"><li class="empty">Loading on-chain history…</li></ul>
+    </section>
+
+    <aside class="side">
+      <section class="card">
+        <div class="card-h"><h2>The leash</h2></div>
+        <div class="card-b">
+          <div class="rules" id="rules"></div>
+          <div class="tags" id="allow"></div>
+        </div>
+      </section>
+      <section class="card">
+        <div class="card-h"><h2>Agent key permissions</h2></div>
+        <div class="card-b" id="perms"><span class="muted">Checking keys…</span></div>
+      </section>
+      <section class="card">
+        <div class="card-h"><h2>Needs your approval</h2></div>
+        <div class="card-b" id="pending"><span class="muted">Nothing pending</span></div>
+      </section>
+    </aside>
+  </main>
+
+  <footer>
+    <span>Reads the contract directly from NEAR RPC · refreshes every 1.5 s</span>
+    <a href="https://github.com/charitra10/agent-leash" target="_blank" rel="noopener">Source on GitHub</a>
+    <span>Built for NEAR HACKATHON 2026</span>
+  </footer>
+</div>
+
+<div class="toast" id="toast"><div class="ti" id="toastIco">⛔</div><div id="toastTxt"></div></div>
+
+<script>
+const qs = new URLSearchParams(location.search);
+const CONTRACT = qs.get("contract") || "leash.leash-demo-d09e.testnet";
+const NETWORK = CONTRACT.endsWith(".testnet") ? "testnet" : "mainnet";
+const RPC = qs.get("rpc") || (NETWORK === "testnet" ? "https://test.rpc.fastnear.com" : "https://free.rpc.fastnear.com");
+const EXPLORER = NETWORK === "testnet" ? "https://testnet.nearblocks.io" : "https://nearblocks.io";
+const POLL_MS = 1500;
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+$("contractChip").textContent = CONTRACT;
+$("contractChip").href = `${EXPLORER}/address/${CONTRACT}`;
+$("netChip").textContent = NETWORK;
+
+// ---------- RPC ----------
+async function rpc(method, params) {
+  const r = await fetch(RPC, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: "leash", method, params }) });
+  const j = await r.json();
+  if (j.error) throw new Error(j.error.data || j.error.message || "RPC error");
+  if (j.result && j.result.error) throw new Error(j.result.error);
+  return j.result;
+}
+async function view(method, args = {}) {
+  const res = await rpc("query", { request_type: "call_function", finality: "optimistic", account_id: CONTRACT, method_name: method, args_base64: btoa(JSON.stringify(args)) });
+  return JSON.parse(new TextDecoder().decode(new Uint8Array(res.result)));
+}
+
+// ---------- formatting ----------
+const YOCTO = 10n ** 24n;
+function near(y, dp = 3) {
+  const b = BigInt(y), whole = b / YOCTO;
+  const frac = (b % YOCTO).toString().padStart(24, "0").slice(0, dp).replace(/0+$/, "");
+  return frac ? `${whole}.${frac}` : `${whole}`;
+}
+function acct(id) {
+  const i = id.indexOf(".");
+  return i < 0 ? `<span class="acct"><b>${esc(id)}</b></span>` : `<span class="acct"><b>${esc(id.slice(0, i))}</b><span>${esc(id.slice(i))}</span></span>`;
+}
+function ago(ms) {
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 5) return "just now";
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+function until(ms) {
+  const s = Math.max(0, Math.round((ms - Date.now()) / 1000));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return h ? `resets in ${h}h ${m}m` : `resets in ${m}m`;
+}
+function dur(sec) {
+  if (sec % 86400 === 0) return sec === 86400 ? "per day" : `per ${sec / 86400} days`;
+  if (sec % 3600 === 0) return sec === 3600 ? "per hour" : `per ${sec / 3600} h`;
+  return `per ${Math.round(sec / 60)} min`;
+}
+const REASONS = {
+  frozen: "Agent is frozen",
+  zero_amount: "Zero amount",
+  self_payment: "Can't pay itself",
+  blocklisted_recipient: "Recipient is blocklisted",
+  recipient_not_allowlisted: "Recipient not on allowlist",
+  over_per_tx_limit: "Over per-payment cap",
+  over_window_limit: "Daily limit reached",
+  insufficient_funds: "Insufficient funds",
+  too_many_pending: "Too many pending",
+};
+const LABEL = { Sent: "SENT", Approved: "APPROVED", Pending: "PENDING", Blocked: "BLOCKED", Rejected: "REJECTED" };
+const ICONS = {
+  Sent: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17 17 7M8 7h9v9"/></svg>',
+  Approved: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg>',
+  Blocked: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5l-8-3z"/><path d="m9.5 9.5 5 5m0-5-5 5"/></svg>',
+  Rejected: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m9 9 6 6m0-6-6 6"/></svg>',
+  Pending: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+};
+const STATE_ICON = {
+  active: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5l-8-3z"/><path d="m9 12 2 2 4-4"/></svg>',
+  frozen: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M4.9 6.5l14.2 11M19.1 6.5 4.9 17.5M9 4l3 2 3-2M9 20l3-2 3 2"/></svg>',
+};
+
+// ---------- toast ----------
+let toastTimer;
+function toast(html, ice = false) {
+  const t = $("toast");
+  t.classList.toggle("ice", ice);
+  $("toastIco").textContent = ice ? "❄" : "⛔";
+  $("toastTxt").innerHTML = html;
+  t.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove("show"), 3200);
+}
+function flash(id, cls = "flash") {
+  const el = $(id);
+  el.classList.add(cls);
+  setTimeout(() => el.classList.remove(cls), 1400);
+}
+
+// ---------- render ----------
+const nodes = new Map(); // key -> <li>
+let first = true, prev = null;
+
+function renderStatus(s) {
+  const frozen = s.frozen;
+  document.body.classList.toggle("frozen", frozen);
+  $("state").innerHTML = frozen ? `${STATE_ICON.frozen} FROZEN · ALL PAYMENTS BLOCKED` : `${STATE_ICON.active} LEASH ACTIVE`;
+  $("agentName").textContent = s.agent_id;
+  $("spent").textContent = near(s.spent_in_window);
+  $("limit").textContent = near(s.policy.window_limit);
+  $("resets").textContent = until(s.window_resets_at_ms);
+  const limit = BigInt(s.policy.window_limit), spent = BigInt(s.spent_in_window);
+  const pct = limit > 0n ? Math.min(100, Number((spent * 10000n) / limit) / 100) : 0;
+  $("pct").textContent = `${Math.round(pct)}%`;
+  const C = 326.7, bar = $("ringBar");
+  bar.style.strokeDashoffset = String(C - (C * pct) / 100);
+  bar.style.stroke = frozen ? "var(--ice)" : pct >= 90 ? "var(--red)" : pct >= 60 ? "var(--amber)" : "var(--green)";
+  $("ringBar").closest(".ring").style.setProperty("--ring-glow",
+    frozen ? "var(--ice-dim)" : pct >= 90 ? "var(--red-dim)" : pct >= 60 ? "var(--amber-dim)" : "var(--green-dim)");
+  $("bal").textContent = near(s.available_balance, 2);
+  $("sent").textContent = s.total_sent;
+  $("blocked").textContent = s.total_blocked;
+  $("pendCount").textContent = s.pending_count;
+
+  const p = s.policy;
+  $("rules").innerHTML = [
+    ["Max per payment", `${near(p.max_per_tx)} NEAR`],
+    ["Owner approval above", `${near(p.auto_approve_limit)} NEAR`],
+    ["Spending limit", `${near(p.window_limit)} NEAR ${dur(p.window_sec)}`],
+    ["Recipients", p.allowlist_only ? "allowlist only" : "anyone not blocklisted"],
+  ].map(([k, v]) => `<div class="rule"><span class="rk">${k}</span><span class="rv">${esc(v)}</span></div>`).join("");
+
+  if (prev && !first) {
+    if (s.total_blocked > prev.total_blocked) flash("statBlocked");
+    if (s.total_sent > prev.total_sent) flash("statSent", "flash-g");
+    if (frozen && !prev.frozen) toast(`Agent frozen by owner<small>Every payment is now blocked on-chain</small>`, true);
+  }
+  prev = s;
+}
+
+function renderFeed(history) {
+  const list = $("feed");
+  if (!history.length) { list.innerHTML = '<li class="empty">No activity yet. Run <code>npm run demo</code> in agent/.</li>'; return; }
+  const els = [];
+  let newBlocked = null;
+  history.forEach((a, i) => {
+    const key = `${a.id}:${a.outcome}`;
+    let li = nodes.get(key);
+    if (!li) {
+      li = document.createElement("li");
+      li.className = `item ${a.outcome}`;
+      const verb = a.outcome === "Blocked" ? "Tried to pay" : a.outcome === "Pending" ? "Requested" : a.outcome === "Rejected" ? "Rejected" : "Paid";
+      const pill = a.outcome === "Blocked" ? (REASONS[a.reason] || a.reason) : LABEL[a.outcome];
+      li.innerHTML = `
+        <div class="ico">${ICONS[a.outcome]}</div>
+        <div class="it-main">
+          <div class="it-title">${verb} <span class="amt">${near(a.amount)} NEAR</span><span class="arrow">→</span>${acct(a.receiver_id)}</div>
+          <div class="it-memo">${a.memo ? `“${esc(a.memo)}”` : '<span class="muted">no memo</span>'}</div>
+        </div>
+        <div class="it-side"><span class="pill">${esc(pill)}</span><span class="ago" data-ts="${a.timestamp_ms}"></span></div>`;
+      if (!first) {
+        li.classList.add("enter");
+        if (a.outcome === "Blocked" && !newBlocked) newBlocked = a;
+      } else if (i < 8) {
+        li.classList.add("enter");
+        li.style.animationDelay = `${i * 60}ms`;
+      }
+      nodes.set(key, li);
+    }
+    li.querySelector(".ago").textContent = ago(a.timestamp_ms);
+    els.push(li);
+  });
+  list.replaceChildren(...els);
+  $("feedCount").textContent = `${history.length} recent`;
+  if (newBlocked && newBlocked.reason !== "frozen") {
+    toast(`Blocked: ${esc(REASONS[newBlocked.reason] || newBlocked.reason)}<small>${near(newBlocked.amount)} NEAR → ${esc(newBlocked.receiver_id)}</small>`);
+  }
+}
+
+function renderPending(pending) {
+  $("pending").innerHTML = pending.length
+    ? pending.map((p) => `<div class="pend"><div class="pa">${near(p.amount)} NEAR → ${esc(p.receiver_id.split(".")[0])}</div><div class="pm">“${esc(p.memo || "no memo")}” · ${ago(p.timestamp_ms)} · id ${p.id}</div></div>`).join("")
+    : '<span class="muted">Nothing pending</span>';
+}
+
+function renderAllow(list) {
+  $("allow").innerHTML = list.map((a) => `<span class="tag ok" title="${esc(a)}">${esc(a)}</span>`).join("") || '<span class="muted">Allowlist is empty</span>';
+}
+
+async function renderKeys(agentId) {
+  try {
+    const res = await rpc("query", { request_type: "view_access_key_list", finality: "final", account_id: agentId });
+    const keys = res.keys || [];
+    const full = keys.filter((k) => k.access_key.permission === "FullAccess");
+    const fc = keys.filter((k) => k.access_key.permission !== "FullAccess").map((k) => k.access_key.permission.FunctionCall);
+    const leashFc = fc.find((f) => f.receiver_id === CONTRACT);
+    const rows = [];
+    if (leashFc) {
+      rows.push(["y", "✓", `Can call <code>${leashFc.method_names.map(esc).join(", ") || "any method"}</code> on the leash`]);
+      rows.push(["y", "✓", `Gas allowance capped at ${leashFc.allowance ? near(leashFc.allowance, 2) + " NEAR" : "unlimited"}`]);
+      rows.push(["n", "✕", "Cannot send NEAR directly"]);
+      rows.push(["n", "✕", "Cannot change its own rules"]);
+    } else {
+      rows.push(["w", "!", "No function-call key for the leash found"]);
+    }
+    if (full.length) rows.push(["w", "!", `Account also has ${full.length} full-access key${full.length > 1 ? "s" : ""} (held by the owner, not the agent)`]);
+    $("perms").innerHTML = rows.map(([c, b, t]) => `<div class="perm ${c}"><span class="b">${b}</span><span class="t">${t}</span></div>`).join("");
+  } catch (e) {
+    $("perms").innerHTML = `<span class="muted">Couldn't read keys: ${esc(e.message)}</span>`;
+  }
+}
+
+// ---------- loop ----------
+let tick = 0, failures = 0;
+async function refresh() {
+  try {
+    const [status, history, pending, allow] = await Promise.all([
+      view("get_status"), view("get_history", { limit: 30 }), view("get_pending"), view("get_allowlist"),
+    ]);
+    renderStatus(status);
+    renderFeed(history);
+    renderPending(pending);
+    renderAllow(allow);
+    if (tick++ % 20 === 0) renderKeys(status.agent_id);
+    first = false;
+    failures = 0;
+    $("liveChip").className = "chip live";
+    $("liveTxt").textContent = "live";
+  } catch (e) {
+    console.warn(e);
+    if (++failures > 1) { $("liveChip").className = "chip stale"; $("liveTxt").textContent = "reconnecting"; }
+  } finally {
+    setTimeout(refresh, POLL_MS);
+  }
+}
+refresh();
+</script>
+</body>
+</html>
