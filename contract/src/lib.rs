@@ -273,6 +273,15 @@ impl AgentLeash {
         emit("unfrozen", json!({}));
     }
 
+    /// Start a fresh spending window now (spent counter back to zero).
+    #[payable]
+    pub fn reset_window(&mut self) {
+        self.assert_owner();
+        self.window_start_ms = env::block_timestamp_ms();
+        self.spent_in_window = NearToken::from_yoctonear(0);
+        emit("window_reset", json!({}));
+    }
+
     /// Approve a pending payment. The owner's decision overrides the window cap,
     /// but the funds must still be available.
     #[payable]
@@ -564,6 +573,24 @@ mod tests {
         ctx(agent(), 0, 1_001 + 86_400);
         assert_eq!(c.get_status().spent_in_window, milli(0));
         assert_eq!(c.pay(api(), milli(500), None).outcome, Outcome::Sent);
+    }
+
+    #[test]
+    fn owner_can_reset_window() {
+        let mut c = setup();
+        ctx(agent(), 0, 1_001);
+        c.pay(api(), milli(500), None);
+        ctx(owner(), 1, 1_002);
+        c.reset_window();
+        assert_eq!(c.get_status().spent_in_window, milli(0));
+    }
+
+    #[test]
+    #[should_panic(expected = "Only the owner can do this")]
+    fn agent_cannot_reset_window() {
+        let mut c = setup();
+        ctx(agent(), 1, 1_001);
+        c.reset_window();
     }
 
     #[test]
