@@ -7,3 +7,5 @@ dist/
 *.key
 .near-credentials/
 **/ed25519_*.json
+scripts/env.local.sh
+bootstrap.log
