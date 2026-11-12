@@ -1,0 +1,9 @@
+# Build output
+contract/target/
+node_modules/
+dist/
+# Secrets: never commit keys
+.env
+*.key
+.near-credentials/
+**/ed25519_*.json
