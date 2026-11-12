@@ -10,6 +10,8 @@ Even a fully prompt-injected agent can't overspend, because the rules live in th
 **🎬 Demo video:** _link added with the submission_
 **🏁 Built for NEAR HACKATHON 2026** · tracks: **AI Security & Defense** · **Agent Economy**
 
+> **Other submission by the same author:** [Tidewater Market](https://github.com/charitra10/tidewater-market), a small trading game where the shopkeeper is an agent with her own wallet. The two projects are independent: they share no code and no contract.
+
 ---
 
 ## The problem
