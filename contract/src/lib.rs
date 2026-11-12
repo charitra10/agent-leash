@@ -25,6 +25,21 @@ pub const BALANCE_RESERVE: NearToken = NearToken::from_millinear(100); // 0.1 NE
 enum StorageKey {
     Allowlist,
     Blocklist,
+    Guardians,
+}
+
+/// Auto-freeze: if the agent racks up `max_blocked` blocked attempts within
+/// `period_sec`, the contract freezes it on the spot, no human needed.
+#[near(serializers = [borsh, json])]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tripwire {
+    pub max_blocked: u32,
+    pub period_sec: u64,
+}
+
+fn validate_tripwire(t: &Tripwire) {
+    require!(t.max_blocked > 0, "max_blocked must be > 0");
+    require!(t.period_sec > 0, "period_sec must be > 0");
 }
 
 /// The rules the agent must follow. All amounts are in yoctoNEAR (JSON strings).
@@ -79,11 +94,41 @@ pub struct Status {
     pub total_sent: u64,
     pub total_blocked: u64,
     pub pending_count: u32,
+    /// Who froze it: the owner's or a guardian's account id, or "tripwire".
+    pub frozen_by: Option<String>,
+    pub tripwire: Option<Tripwire>,
+    /// Blocked attempts that currently count towards the tripwire.
+    pub strikes: u32,
+    pub guardian_count: u32,
 }
 
 #[near(contract_state)]
 #[derive(PanicOnDefault)]
 pub struct AgentLeash {
+    owner_id: AccountId,
+    agent_id: AccountId,
+    policy: Policy,
+    frozen: bool,
+    allowlist: IterableSet<AccountId>,
+    blocklist: IterableSet<AccountId>,
+    window_start_ms: u64,
+    spent_in_window: NearToken,
+    next_id: u64,
+    history: Vec<Attempt>,
+    pending: Vec<Attempt>,
+    total_sent: u64,
+    total_blocked: u64,
+    // ---- added in v2 ----
+    guardians: IterableSet<AccountId>,
+    tripwire: Option<Tripwire>,
+    /// Timestamps (ms) of recent blocked attempts, newest last.
+    recent_blocks_ms: Vec<u64>,
+    frozen_by: Option<String>,
+}
+
+/// State layout of v1 (before guardians and tripwire), used by `migrate`.
+#[near(serializers = [borsh])]
+pub struct AgentLeashV1 {
     owner_id: AccountId,
     agent_id: AccountId,
     policy: Policy,
@@ -125,8 +170,13 @@ impl AgentLeash {
         agent_id: AccountId,
         policy: Policy,
         allowlist: Option<Vec<AccountId>>,
+        guardians: Option<Vec<AccountId>>,
+        tripwire: Option<Tripwire>,
     ) -> Self {
         validate_policy(&policy);
+        if let Some(t) = &tripwire {
+            validate_tripwire(t);
+        }
         let mut this = Self {
             owner_id,
             agent_id,
@@ -141,11 +191,45 @@ impl AgentLeash {
             pending: Vec::new(),
             total_sent: 0,
             total_blocked: 0,
+            guardians: IterableSet::new(StorageKey::Guardians),
+            tripwire,
+            recent_blocks_ms: Vec::new(),
+            frozen_by: None,
         };
         for a in allowlist.unwrap_or_default() {
             this.allowlist.insert(a);
         }
+        for g in guardians.unwrap_or_default() {
+            this.guardians.insert(g);
+        }
         this
+    }
+
+    /// One-time upgrade from the v1 state layout. Keeps all history and counters.
+    #[private]
+    #[init(ignore_state)]
+    pub fn migrate() -> Self {
+        let old: AgentLeashV1 =
+            env::state_read().unwrap_or_else(|| env::panic_str("No v1 state to migrate"));
+        Self {
+            frozen_by: old.frozen.then(|| old.owner_id.to_string()),
+            owner_id: old.owner_id,
+            agent_id: old.agent_id,
+            policy: old.policy,
+            frozen: old.frozen,
+            allowlist: old.allowlist,
+            blocklist: old.blocklist,
+            window_start_ms: old.window_start_ms,
+            spent_in_window: old.spent_in_window,
+            next_id: old.next_id,
+            history: old.history,
+            pending: old.pending,
+            total_sent: old.total_sent,
+            total_blocked: old.total_blocked,
+            guardians: IterableSet::new(StorageKey::Guardians),
+            tripwire: None,
+            recent_blocks_ms: Vec::new(),
+        }
     }
 
     // ------------------------------------------------------------------
@@ -186,6 +270,10 @@ impl AgentLeash {
                 attempt.reason = Some(reason.to_string());
                 self.total_blocked += 1;
                 self.record(&attempt, "payment_blocked");
+                // Attempts while already frozen don't count as new strikes.
+                if reason != "frozen" {
+                    self.strike();
+                }
             }
             Ok(true) => {
                 // Needs owner approval.
@@ -259,18 +347,60 @@ impl AgentLeash {
         emit("blocklist_removed", json!({ "account_ids": account_ids }));
     }
 
-    #[payable]
+    /// Pull the emergency brake. The owner or any guardian can do this, and it
+    /// needs no deposit: freezing only ever makes things safer, so a guardian
+    /// bot can hold a cheap function-call key that is limited to `freeze`.
     pub fn freeze(&mut self) {
-        self.assert_owner();
-        self.frozen = true;
-        emit("frozen", json!({}));
+        let caller = env::predecessor_account_id();
+        require!(
+            caller == self.owner_id || self.guardians.contains(&caller),
+            "Only the owner or a guardian can freeze"
+        );
+        if !self.frozen {
+            self.frozen = true;
+            self.frozen_by = Some(caller.to_string());
+            emit("frozen", json!({ "by": caller }));
+        }
     }
 
+    /// Only the owner can release the brake (full-access key required).
     #[payable]
     pub fn unfreeze(&mut self) {
         self.assert_owner();
         self.frozen = false;
+        self.frozen_by = None;
+        self.recent_blocks_ms.clear();
         emit("unfrozen", json!({}));
+    }
+
+    #[payable]
+    pub fn add_guardians(&mut self, account_ids: Vec<AccountId>) {
+        self.assert_owner();
+        for a in &account_ids {
+            self.guardians.insert(a.clone());
+        }
+        emit("guardians_added", json!({ "account_ids": account_ids }));
+    }
+
+    #[payable]
+    pub fn remove_guardians(&mut self, account_ids: Vec<AccountId>) {
+        self.assert_owner();
+        for a in &account_ids {
+            self.guardians.remove(a);
+        }
+        emit("guardians_removed", json!({ "account_ids": account_ids }));
+    }
+
+    /// Set (or with `null`, remove) the auto-freeze tripwire.
+    #[payable]
+    pub fn set_tripwire(&mut self, tripwire: Option<Tripwire>) {
+        self.assert_owner();
+        if let Some(t) = &tripwire {
+            validate_tripwire(t);
+        }
+        self.tripwire = tripwire.clone();
+        self.recent_blocks_ms.clear();
+        emit("tripwire_updated", json!({ "tripwire": tripwire }));
     }
 
     /// Start a fresh spending window now (spent counter back to zero).
@@ -336,6 +466,10 @@ impl AgentLeash {
             total_sent: self.total_sent,
             total_blocked: self.total_blocked,
             pending_count: self.pending.len() as u32,
+            frozen_by: self.frozen_by.clone(),
+            tripwire: self.tripwire.clone(),
+            strikes: self.current_strikes(),
+            guardian_count: self.guardians.len(),
         }
     }
 
@@ -357,9 +491,47 @@ impl AgentLeash {
         self.blocklist.iter().cloned().collect()
     }
 
+    pub fn get_guardians(&self) -> Vec<AccountId> {
+        self.guardians.iter().cloned().collect()
+    }
+
     // ------------------------------------------------------------------
     // Internal
     // ------------------------------------------------------------------
+
+    /// Record a blocked attempt as a strike; freeze if the tripwire trips.
+    fn strike(&mut self) {
+        let Some(tw) = self.tripwire.clone() else { return };
+        let now = env::block_timestamp_ms();
+        let period = tw.period_sec.saturating_mul(1000);
+        self.recent_blocks_ms.retain(|t| now.saturating_sub(*t) < period);
+        self.recent_blocks_ms.push(now);
+        // Only the newest `max_blocked` timestamps ever matter: bound storage.
+        let max = tw.max_blocked as usize;
+        if self.recent_blocks_ms.len() > max {
+            let extra = self.recent_blocks_ms.len() - max;
+            self.recent_blocks_ms.drain(..extra);
+        }
+        let strikes = self.recent_blocks_ms.len() as u32;
+        if strikes >= tw.max_blocked && !self.frozen {
+            self.frozen = true;
+            self.frozen_by = Some("tripwire".to_string());
+            emit(
+                "auto_frozen",
+                json!({ "strikes": strikes, "max_blocked": tw.max_blocked, "period_sec": tw.period_sec }),
+            );
+        }
+    }
+
+    fn current_strikes(&self) -> u32 {
+        let Some(tw) = &self.tripwire else { return 0 };
+        let now = env::block_timestamp_ms();
+        let period = tw.period_sec.saturating_mul(1000);
+        self.recent_blocks_ms
+            .iter()
+            .filter(|t| now.saturating_sub(**t) < period)
+            .count() as u32
+    }
 
     /// Err(reason) = block. Ok(true) = needs approval. Ok(false) = send now.
     fn check(&self, a: &Attempt) -> Result<bool, &'static str> {
@@ -505,7 +677,24 @@ mod tests {
 
     fn setup() -> AgentLeash {
         ctx(owner(), 0, 1_000);
-        AgentLeash::new(owner(), agent(), policy(), Some(vec![api()]))
+        AgentLeash::new(owner(), agent(), policy(), Some(vec![api()]), None, None)
+    }
+
+    fn guardian() -> AccountId {
+        "guardian-bot.testnet".parse().unwrap()
+    }
+
+    /// Leash with a tripwire of 3 blocks per hour and one guardian.
+    fn setup_guarded() -> AgentLeash {
+        ctx(owner(), 0, 1_000);
+        AgentLeash::new(
+            owner(),
+            agent(),
+            policy(),
+            Some(vec![api()]),
+            Some(vec![guardian()]),
+            Some(Tripwire { max_blocked: 3, period_sec: 3600 }),
+        )
     }
 
     #[test]
@@ -680,8 +869,10 @@ mod tests {
     #[should_panic(expected = "Requires attached deposit of exactly 1 yoctoNEAR")]
     fn owner_actions_need_one_yocto() {
         let mut c = setup();
-        ctx(owner(), 0, 1_001);
+        ctx(owner(), 1, 1_001);
         c.freeze();
+        ctx(owner(), 0, 1_002);
+        c.unfreeze();
     }
 
     #[test]
@@ -711,5 +902,157 @@ mod tests {
         ctx(agent(), 0, 1_001);
         let a = c.pay(api(), milli(1), Some("x".repeat(500)));
         assert_eq!(a.memo.len(), MAX_MEMO_LEN);
+    }
+
+    // ---------------- tripwire ----------------
+
+    #[test]
+    fn tripwire_auto_freezes_after_three_strikes() {
+        let mut c = setup_guarded();
+        ctx(agent(), 0, 1_001);
+        c.pay(scammer(), milli(100), None); // strike 1
+        assert_eq!(c.get_status().strikes, 1);
+        c.pay(api(), near(9), None); // strike 2
+        assert!(!c.get_status().frozen);
+        c.pay(scammer(), milli(1), None); // strike 3 -> freeze
+        let s = c.get_status();
+        assert!(s.frozen);
+        assert_eq!(s.frozen_by.as_deref(), Some("tripwire"));
+        assert!(get_logs().iter().any(|l| l.contains("\"auto_frozen\"")));
+        // Even a perfectly valid payment is now refused.
+        assert_eq!(c.pay(api(), milli(10), None).reason.as_deref(), Some("frozen"));
+    }
+
+    #[test]
+    fn tripwire_forgets_old_strikes() {
+        let mut c = setup_guarded();
+        ctx(agent(), 0, 1_001);
+        c.pay(scammer(), milli(1), None);
+        c.pay(scammer(), milli(1), None);
+        // Over an hour later, the old strikes have expired.
+        ctx(agent(), 0, 1_001 + 3_601);
+        assert_eq!(c.get_status().strikes, 0);
+        c.pay(scammer(), milli(1), None);
+        assert!(!c.get_status().frozen);
+        assert_eq!(c.get_status().strikes, 1);
+    }
+
+    #[test]
+    fn frozen_attempts_do_not_count_and_unfreeze_clears_strikes() {
+        let mut c = setup_guarded();
+        ctx(agent(), 0, 1_001);
+        for _ in 0..3 {
+            c.pay(scammer(), milli(1), None);
+        }
+        for _ in 0..5 {
+            c.pay(api(), milli(1), None); // blocked as "frozen"
+        }
+        assert_eq!(c.get_status().strikes, 3);
+        ctx(owner(), 1, 1_002);
+        c.unfreeze();
+        let s = c.get_status();
+        assert!(!s.frozen);
+        assert_eq!(s.strikes, 0);
+        assert_eq!(s.frozen_by, None);
+    }
+
+    #[test]
+    fn no_tripwire_means_no_auto_freeze() {
+        let mut c = setup();
+        ctx(agent(), 0, 1_001);
+        for _ in 0..10 {
+            c.pay(scammer(), milli(1), None);
+        }
+        assert!(!c.get_status().frozen);
+    }
+
+    #[test]
+    #[should_panic(expected = "max_blocked must be > 0")]
+    fn invalid_tripwire_is_rejected() {
+        let mut c = setup();
+        ctx(owner(), 1, 1_001);
+        c.set_tripwire(Some(Tripwire { max_blocked: 0, period_sec: 60 }));
+    }
+
+    // ---------------- guardians ----------------
+
+    #[test]
+    fn guardian_can_freeze_without_deposit() {
+        let mut c = setup_guarded();
+        ctx(guardian(), 0, 1_001);
+        c.freeze();
+        let s = c.get_status();
+        assert!(s.frozen);
+        assert_eq!(s.frozen_by.as_deref(), Some("guardian-bot.testnet"));
+    }
+
+    #[test]
+    #[should_panic(expected = "Only the owner can do this")]
+    fn guardian_cannot_unfreeze() {
+        let mut c = setup_guarded();
+        ctx(guardian(), 0, 1_001);
+        c.freeze();
+        ctx(guardian(), 1, 1_002);
+        c.unfreeze();
+    }
+
+    #[test]
+    #[should_panic(expected = "Only the owner or a guardian can freeze")]
+    fn stranger_cannot_freeze() {
+        let mut c = setup_guarded();
+        ctx(scammer(), 0, 1_001);
+        c.freeze();
+    }
+
+    #[test]
+    #[should_panic(expected = "Only the owner can do this")]
+    fn agent_cannot_add_guardians() {
+        let mut c = setup();
+        ctx(agent(), 1, 1_001);
+        c.add_guardians(vec![agent()]);
+    }
+
+    #[test]
+    fn owner_manages_guardians() {
+        let mut c = setup();
+        ctx(owner(), 1, 1_001);
+        c.add_guardians(vec![guardian()]);
+        assert_eq!(c.get_guardians(), vec![guardian()]);
+        c.remove_guardians(vec![guardian()]);
+        assert!(c.get_guardians().is_empty());
+    }
+
+    // ---------------- upgrade ----------------
+
+    #[test]
+    fn migrate_keeps_v1_data() {
+        ctx(owner(), 0, 1_000);
+        let mut allow = IterableSet::new(StorageKey::Allowlist);
+        allow.insert(api());
+        allow.flush();
+        let v1 = AgentLeashV1 {
+            owner_id: owner(),
+            agent_id: agent(),
+            policy: policy(),
+            frozen: true,
+            allowlist: allow,
+            blocklist: IterableSet::new(StorageKey::Blocklist),
+            window_start_ms: 1_000_000,
+            spent_in_window: milli(450),
+            next_id: 27,
+            history: vec![],
+            pending: vec![],
+            total_sent: 11,
+            total_blocked: 9,
+        };
+        env::state_write(&v1);
+        let c = AgentLeash::migrate();
+        let s = c.get_status();
+        assert_eq!(s.total_sent, 11);
+        assert_eq!(s.total_blocked, 9);
+        assert!(s.frozen);
+        assert_eq!(s.frozen_by.as_deref(), Some("owner.testnet"));
+        assert_eq!(s.tripwire, None);
+        assert_eq!(c.get_allowlist(), vec![api()]);
     }
 }

@@ -189,6 +189,13 @@ a.chip:hover { border-color: var(--border-hi); color: var(--text); }
 .tag { padding: 5px 10px; border-radius: 9px; background: var(--panel-hi); border: 1px solid var(--border); font: 500 12px var(--mono); color: var(--text); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tag.ok::before { content: "✓ "; color: var(--green); }
 .tag.no::before { content: "✕ "; color: var(--red); }
+.tag.guard::before { content: "❄ "; color: var(--ice); }
+.sub-h { margin-top: 16px; font-size: 11.5px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
+.sub-h .muted { text-transform: none; letter-spacing: 0; font-weight: 500; }
+.sub-h + .tags { margin-top: 8px; }
+.strikes { display: inline-flex; gap: 5px; vertical-align: middle; margin-right: 6px; }
+.strikes i { width: 9px; height: 9px; border-radius: 50%; background: rgba(255,255,255,0.12); transition: background 0.4s, box-shadow 0.4s; }
+.strikes i.on { background: var(--red); box-shadow: 0 0 8px rgba(251,113,133,0.8); }
 .perm { display: flex; align-items: center; gap: 10px; padding: 8px 0; }
 .perm .b { width: 22px; height: 22px; border-radius: 7px; display: grid; place-items: center; font-size: 12px; font-weight: 700; flex: none; }
 .perm.y .b { background: var(--green-dim); color: var(--green); }
@@ -282,7 +289,10 @@ footer a { color: var(--muted); }
         <div class="card-h"><h2>The leash</h2></div>
         <div class="card-b">
           <div class="rules" id="rules"></div>
+          <div class="sub-h">Allowed recipients</div>
           <div class="tags" id="allow"></div>
+          <div class="sub-h">Guardians <span class="muted">· can freeze, never unfreeze</span></div>
+          <div class="tags" id="guards"></div>
         </div>
       </section>
       <section class="card">
@@ -309,7 +319,10 @@ footer a { color: var(--muted); }
 const qs = new URLSearchParams(location.search);
 const CONTRACT = qs.get("contract") || "leash.leash-demo-d09e.testnet";
 const NETWORK = CONTRACT.endsWith(".testnet") ? "testnet" : "mainnet";
-const RPC = qs.get("rpc") || (NETWORK === "testnet" ? "https://test.rpc.fastnear.com" : "https://free.rpc.fastnear.com");
+// Free public RPCs rate-limit, so keep a fallback (independent providers).
+const RPCS = qs.get("rpc") ? [qs.get("rpc")]
+  : NETWORK === "testnet" ? ["https://test.rpc.fastnear.com", "https://rpc.testnet.near.org"]
+  : ["https://free.rpc.fastnear.com", "https://rpc.mainnet.near.org"];
 const EXPLORER = NETWORK === "testnet" ? "https://testnet.nearblocks.io" : "https://nearblocks.io";
 const POLL_MS = 1500;
 
@@ -321,12 +334,28 @@ $("contractChip").href = `${EXPLORER}/address/${CONTRACT}`;
 $("netChip").textContent = NETWORK;
 
 // ---------- RPC ----------
+let rpcIdx = 0; // stick with whichever RPC last worked
 async function rpc(method, params) {
-  const r = await fetch(RPC, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: "leash", method, params }) });
-  const j = await r.json();
-  if (j.error) throw new Error(j.error.data || j.error.message || "RPC error");
-  if (j.result && j.result.error) throw new Error(j.result.error);
-  return j.result;
+  let lastErr;
+  for (let i = 0; i < RPCS.length; i++) {
+    const idx = (rpcIdx + i) % RPCS.length;
+    try {
+      const r = await fetch(RPCS[idx], { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: "leash", method, params }) });
+      if (r.status === 429 || r.status >= 500) throw new Error(`HTTP ${r.status}`);
+      const j = await r.json();
+      if (j.error) {
+        if (j.error.code === -429) throw new Error("rate limited");
+        throw Object.assign(new Error(j.error.data || j.error.message || "RPC error"), { fatal: true });
+      }
+      if (j.result && j.result.error) throw Object.assign(new Error(j.result.error), { fatal: true });
+      rpcIdx = idx;
+      return j.result;
+    } catch (e) {
+      if (e.fatal) throw e; // a real answer (e.g. method missing): don't retry elsewhere
+      lastErr = e;
+    }
+  }
+  throw lastErr;
 }
 async function view(method, args = {}) {
   const res = await rpc("query", { request_type: "call_function", finality: "optimistic", account_id: CONTRACT, method_name: method, args_base64: btoa(JSON.stringify(args)) });
@@ -407,10 +436,28 @@ function flash(id, cls = "flash") {
 const nodes = new Map(); // key -> <li>
 let first = true, prev = null;
 
+let quietBlockToastUntil = 0; // a freeze alert beats a "blocked" alert in the same moment
+
+function frozenCause(s) {
+  if (!s.frozen) return null;
+  if (s.frozen_by === "tripwire") return "tripwire";
+  if (!s.frozen_by || s.frozen_by === s.owner_id) return "owner";
+  return "guardian";
+}
+const FROZEN_LABEL = { tripwire: "AUTO-FROZEN BY TRIPWIRE", guardian: "FROZEN BY GUARDIAN", owner: "FROZEN BY OWNER" };
+
+function strikeDots(n, max) {
+  const shown = Math.min(max, 10);
+  let dots = "";
+  for (let i = 0; i < shown; i++) dots += `<i class="${i < n ? "on" : ""}"></i>`;
+  return `<span class="strikes">${dots}</span>`;
+}
+
 function renderStatus(s) {
   const frozen = s.frozen;
+  const cause = frozenCause(s);
   document.body.classList.toggle("frozen", frozen);
-  setHTML($("state"), frozen ? `${STATE_ICON.frozen} FROZEN · ALL PAYMENTS BLOCKED` : `${STATE_ICON.active} LEASH ACTIVE`);
+  setHTML($("state"), frozen ? `${STATE_ICON.frozen} ${FROZEN_LABEL[cause]}` : `${STATE_ICON.active} LEASH ACTIVE`);
   $("agentName").textContent = s.agent_id;
   $("spent").textContent = near(s.spent_in_window);
   $("limit").textContent = near(s.policy.window_limit);
@@ -428,18 +475,26 @@ function renderStatus(s) {
   $("blocked").textContent = s.total_blocked;
   $("pendCount").textContent = s.pending_count;
 
-  const p = s.policy;
-  setHTML($("rules"), [
-    ["Max per payment", `${near(p.max_per_tx)} NEAR`],
-    ["Owner approval above", `${near(p.auto_approve_limit)} NEAR`],
-    ["Spending limit", `${near(p.window_limit)} NEAR ${dur(p.window_sec)}`],
+  const p = s.policy, tw = s.tripwire;
+  const rows = [
+    ["Max per payment", esc(`${near(p.max_per_tx)} NEAR`)],
+    ["Owner approval above", esc(`${near(p.auto_approve_limit)} NEAR`)],
+    ["Spending limit", esc(`${near(p.window_limit)} NEAR ${dur(p.window_sec)}`)],
     ["Recipients", p.allowlist_only ? "allowlist only" : "anyone not blocklisted"],
-  ].map(([k, v]) => `<div class="rule"><span class="rk">${k}</span><span class="rv">${esc(v)}</span></div>`).join(""));
+    ["Auto-freeze tripwire", tw ? esc(`${tw.max_blocked} blocks ${dur(tw.period_sec)}`) : '<span class="muted">off</span>'],
+  ];
+  if (tw) rows.push(["Strikes", `${strikeDots(s.strikes, tw.max_blocked)} ${s.strikes} / ${tw.max_blocked}`]);
+  setHTML($("rules"), rows.map(([k, v]) => `<div class="rule"><span class="rk">${k}</span><span class="rv">${v}</span></div>`).join(""));
 
   if (prev && !first) {
     if (s.total_blocked > prev.total_blocked) flash("statBlocked");
     if (s.total_sent > prev.total_sent) flash("statSent", "flash-g");
-    if (frozen && !prev.frozen) toast(`Agent frozen by owner<small>Every payment is now blocked on-chain</small>`, true);
+    if (frozen && !prev.frozen) {
+      quietBlockToastUntil = Date.now() + 3500;
+      if (cause === "tripwire") toast(`Tripwire tripped: agent auto-frozen<small>${tw ? tw.max_blocked : "Too many"} blocked attempts ${tw ? dur(tw.period_sec) : ""}. The leash locked itself.</small>`, true);
+      else if (cause === "guardian") toast(`Guardian pulled the brake<small>${esc(s.frozen_by)} froze the agent</small>`, true);
+      else toast(`Agent frozen by owner<small>Every payment is now blocked on-chain</small>`, true);
+    }
   }
   prev = s;
 }
@@ -496,7 +551,7 @@ function renderFeed(history) {
   els.forEach((li, i) => { if (list.children[i] !== li) list.insertBefore(li, list.children[i] || null); });
   for (const [k, li] of nodes) if (!keep.has(li)) nodes.delete(k);
   setText($("feedCount"), `${history.length} recent`);
-  if (newBlocked && newBlocked.reason !== "frozen") {
+  if (newBlocked && newBlocked.reason !== "frozen" && Date.now() > quietBlockToastUntil) {
     toast(`Blocked: ${esc(REASONS[newBlocked.reason] || newBlocked.reason)}<small>${near(newBlocked.amount)} NEAR → ${esc(newBlocked.receiver_id)}</small>`);
   }
 }
@@ -509,6 +564,10 @@ function renderPending(pending) {
 
 function renderAllow(list) {
   setHTML($("allow"), list.map((a) => `<span class="tag ok" title="${esc(a)}">${esc(a)}</span>`).join("") || '<span class="muted">Allowlist is empty</span>');
+}
+
+function renderGuardians(list) {
+  setHTML($("guards"), list.map((a) => `<span class="tag guard" title="${esc(a)}">${esc(a)}</span>`).join("") || '<span class="muted">No guardians</span>');
 }
 
 async function renderKeys(agentId) {
@@ -535,16 +594,30 @@ async function renderKeys(agentId) {
 }
 
 // ---------- loop ----------
-let tick = 0, failures = 0;
+// One cheap get_status call per tick; the heavier lists are only re-fetched
+// when the status shows that something changed (or every ~30 s regardless).
+let tick = 0, failures = 0, lastSig = "";
+const cache = {};
 async function refresh() {
   try {
-    const [status, history, pending, allow] = await Promise.all([
-      view("get_status"), view("get_history", { limit: 30 }), view("get_pending"), view("get_allowlist"),
-    ]);
+    const status = await view("get_status");
+    const sig = [status.total_sent, status.total_blocked, status.pending_count, status.frozen, status.spent_in_window, status.guardian_count].join("|");
+    const slow = tick % 20 === 0;
+    if (sig !== lastSig || slow) {
+      [cache.history, cache.pending] = await Promise.all([view("get_history", { limit: 30 }), view("get_pending")]);
+    }
+    if (slow || status.guardian_count !== prev?.guardian_count) {
+      [cache.allow, cache.guards] = await Promise.all([
+        view("get_allowlist"),
+        view("get_guardians").catch(() => []), // older contract versions have no guardians
+      ]);
+    }
+    lastSig = sig;
     renderStatus(status);
-    renderFeed(history);
-    renderPending(pending);
-    renderAllow(allow);
+    renderFeed(cache.history);
+    renderPending(cache.pending);
+    renderAllow(cache.allow);
+    renderGuardians(cache.guards);
     if (tick++ % 20 === 0) renderKeys(status.agent_id);
     first = false;
     failures = 0;

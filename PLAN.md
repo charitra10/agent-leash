@@ -41,6 +41,8 @@ Agents are starting to hold money: they pay for APIs, compute and data. Today th
 6. Owner hits **freeze** → every payment is BLOCKED (`frozen`) until unfreeze.
 7. The agent's key can't send NEAR directly or call owner methods (shown on-chain with near-cli).
 8. Dashboard shows balance, limits, spent-in-window and a live feed of sent / pending / blocked attempts.
+9. **Tripwire:** after N blocked attempts within a period (demo: 3 per hour), the contract freezes the agent by itself.
+10. **Guardian:** a guardian account can freeze (no deposit needed, so a cheap function-call key works) but can never unfreeze or change rules.
 
 ## Timeline (IST)
 | When | What | Status |

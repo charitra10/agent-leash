@@ -1,5 +1,5 @@
 // Shared setup for the Agent Leash demo scripts.
-import { Account, JsonRpcProvider, nearToYocto, yoctoToNear, teraToGas } from "near-api-js";
+import { Account, JsonRpcProvider, FailoverRpcProvider, nearToYocto, yoctoToNear, teraToGas } from "near-api-js";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -13,27 +13,43 @@ export const LEASH = process.env.LEASH ?? `leash.${OWNER}`;
 export const AGENT = process.env.AGENT ?? `agent.${OWNER}`;
 export const API = process.env.API ?? `api.${OWNER}`;
 export const SCAMMER = process.env.SCAMMER ?? `refund-desk.${OWNER}`;
-export const RPC_URL = process.env.RPC_URL ?? "https://test.rpc.fastnear.com";
+export const GUARDIAN = process.env.GUARDIAN ?? `guardian.${OWNER}`;
+// Free public RPCs rate-limit bursts, so fail over between independent providers.
+// (The dashboard prefers fastnear, so the demo prefers NEAR's own RPC.)
+export const RPC_URLS = (process.env.RPC_URLS ?? "https://rpc.testnet.near.org,https://test.rpc.fastnear.com")
+  .split(",").map((u) => u.trim()).filter(Boolean);
 
-export const provider = new JsonRpcProvider({ url: RPC_URL });
+export const provider = new FailoverRpcProvider(RPC_URLS.map((url) => new JsonRpcProvider({ url })));
 export { nearToYocto, yoctoToNear };
 
-/** The agent signs with its FUNCTION-CALL key only (agent/.env). */
-export function agentAccount() {
+/** The agent signs with its FUNCTION-CALL key only (agent/.env).
+ *  `direct: true` skips failover, for calls we EXPECT the protocol to reject
+ *  (failover would retry them on the next RPC and hide the real error). */
+export function agentAccount({ direct = false } = {}) {
   const key = process.env.AGENT_PRIVATE_KEY;
   if (!key) throw new Error("AGENT_PRIVATE_KEY missing: run scripts/setup-agent-key.sh first");
-  return new Account(AGENT, provider, key);
+  return new Account(AGENT, direct ? new JsonRpcProvider({ url: RPC_URLS[0] }) : provider, key);
 }
 
-/** The owner signs with the full-access key that near-cli saved. */
-export function ownerAccount() {
+/** Load an account using the key near-cli saved in ~/.near-credentials/testnet. */
+function keychainAccount(accountId, envKey) {
   const key =
-    process.env.OWNER_PRIVATE_KEY ??
+    process.env[envKey] ??
     JSON.parse(
-      readFileSync(join(homedir(), ".near-credentials", "testnet", `${OWNER}.json`), "utf8"),
+      readFileSync(join(homedir(), ".near-credentials", "testnet", `${accountId}.json`), "utf8"),
     ).private_key;
-  return new Account(OWNER, provider, key);
+  return new Account(accountId, provider, key);
 }
+
+/** The owner signs with their full-access key. */
+export const ownerAccount = () => keychainAccount(OWNER, "OWNER_PRIVATE_KEY");
+
+/** The guardian (e.g. a monitoring bot) may only freeze. */
+export const guardianAccount = () => keychainAccount(GUARDIAN, "GUARDIAN_PRIVATE_KEY");
+
+/** Freeze needs no deposit, so any key of the owner or a guardian works. */
+export const freeze = (account) =>
+  account.callFunction({ contractId: LEASH, methodName: "freeze", args: {}, gas: teraToGas("15") });
 
 export const view = (method, args = {}) =>
   provider.callFunction({ contractId: LEASH, method, args });
